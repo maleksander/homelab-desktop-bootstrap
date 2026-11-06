@@ -10,8 +10,9 @@
 # history; root's stays locked (sudo is the way to root).
 #
 # The layout: an EFI system partition (1 GiB, /boot) and the rest as root,
-# btrfs: subvolumes @ (/), @home, and @log and @pkg, kept out of root's
-# snapshots so a rollback does not lose logs or re-download packages. No swap
+# btrfs: subvolumes @ (/), @home, @snapshots (outside @, so a snapshot can
+# replace it), and @log and @pkg, kept out of root's snapshots so a rollback
+# does not lose logs or re-download packages. No swap
 # partition: zram, so nothing of memory reaches the disk in the clear.
 set -euo pipefail
 
@@ -86,12 +87,13 @@ udevadm settle
 mkfs.fat -F 32 -n ESP "${part}1" >/dev/null
 mkfs.btrfs -q -f -L root "${part}2"
 mount "${part}2" "$MOUNT"
-for subvolume in @ @home @log @pkg; do
+for subvolume in @ @home @snapshots @log @pkg; do
   btrfs -q subvolume create "$MOUNT/$subvolume"
 done
 umount "$MOUNT"
 mount -o "$BTRFS_OPTIONS,subvol=@" "${part}2" "$MOUNT"
 mount --mkdir -o "$BTRFS_OPTIONS,subvol=@home" "${part}2" "$MOUNT/home"
+mount --mkdir -o "$BTRFS_OPTIONS,subvol=@snapshots" "${part}2" "$MOUNT/.snapshots"
 mount --mkdir -o "$BTRFS_OPTIONS,subvol=@log" "${part}2" "$MOUNT/var/log"
 mount --mkdir -o "$BTRFS_OPTIONS,subvol=@pkg" "${part}2" "$MOUNT/var/cache/pacman/pkg"
 mount --mkdir -o fmask=0077,dmask=0077 "${part}1" "$MOUNT/boot"
