@@ -11,8 +11,8 @@
 #
 # The layout: an EFI system partition (1 GiB, /boot) and the rest as root,
 # btrfs: subvolumes @ (/), @home, @snapshots (outside @, so a snapshot can
-# replace it), and @log and @pkg, kept out of root's snapshots so a rollback
-# does not lose logs or re-download packages. No swap
+# replace it), and @log, @pkg and @docker, kept out of root's snapshots so a
+# rollback keeps the logs, the package cache and the containers. No swap
 # partition: zram, so nothing of memory reaches the disk in the clear.
 set -euo pipefail
 
@@ -87,7 +87,7 @@ udevadm settle
 mkfs.fat -F 32 -n ESP "${part}1" >/dev/null
 mkfs.btrfs -q -f -L root "${part}2"
 mount "${part}2" "$MOUNT"
-for subvolume in @ @home @snapshots @log @pkg; do
+for subvolume in @ @home @snapshots @log @pkg @docker; do
   btrfs -q subvolume create "$MOUNT/$subvolume"
 done
 umount "$MOUNT"
@@ -96,6 +96,7 @@ mount --mkdir -o "$BTRFS_OPTIONS,subvol=@home" "${part}2" "$MOUNT/home"
 mount --mkdir -o "$BTRFS_OPTIONS,subvol=@snapshots" "${part}2" "$MOUNT/.snapshots"
 mount --mkdir -o "$BTRFS_OPTIONS,subvol=@log" "${part}2" "$MOUNT/var/log"
 mount --mkdir -o "$BTRFS_OPTIONS,subvol=@pkg" "${part}2" "$MOUNT/var/cache/pacman/pkg"
+mount --mkdir -o "$BTRFS_OPTIONS,subvol=@docker" "${part}2" "$MOUNT/var/lib/docker"
 mount --mkdir -o fmask=0077,dmask=0077 "${part}1" "$MOUNT/boot"
 
 # ---- The base system. ----
