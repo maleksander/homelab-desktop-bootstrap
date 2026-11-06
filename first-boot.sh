@@ -13,7 +13,7 @@ set -euo pipefail
 
 OWNER=maleksander
 PROJECTS="$HOME/projects"
-REPOSITORIES=(homelab-ops homelab-desktop)
+REPOSITORIES=(homelab-ops homelab-platform homelab-desktop)
 # github.com's own key: public, published by GitHub, pinned so the first connection
 # is not a blind trust.
 GITHUB_HOST_KEY='github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl'
@@ -54,7 +54,8 @@ grep -qsF "$GITHUB_HOST_KEY" "$HOME/.ssh/known_hosts" || echo "$GITHUB_HOST_KEY"
 export GIT_SSH_COMMAND='ssh -o PubkeyAuthentication=unbound -o StrictHostKeyChecking=yes'
 for repository in "${REPOSITORIES[@]}"; do
   if [ -d "$PROJECTS/$repository/.git" ]; then
-    echo "$repository: already here"
+    git -C "$PROJECTS/$repository" pull --ff-only --quiet
+    echo "$repository: up to date"
   else
     git clone "git@github.com:$OWNER/$repository.git" "$PROJECTS/$repository"
   fi
@@ -66,5 +67,16 @@ sudo pacman -Syu --needed --noconfirm ansible-core
 cd "$PROJECTS/homelab-desktop/ansible"
 ansible-galaxy collection install -r requirements.yml
 ansible-playbook playbooks/site.yml --ask-become-pass
+
+# ---- What needs the card and the lab. ----
+# The sign-in kubeconfig holds the cluster's public CA, read over SSH with the card:
+# Ansible has no agent. Needs the lab: on another network, it is left for later.
+say "kubectl, through Authentik (a touch)"
+cd "$PROJECTS/homelab-ops"
+if mise run kubeconfig && mise exec -- scripts/kubeconfig_oidc.sh; then
+  rm -f "$XDG_RUNTIME_DIR/homelab-admin.yaml"
+else
+  echo "Not reachable from here: later, in homelab-ops, mise run kubeconfig, then scripts/kubeconfig_oidc.sh"
+fi
 
 say "Done. Reboot into the desktop."
