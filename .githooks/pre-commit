@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Public repository: refuse a commit carrying a secret in the clear.
+exec mise exec -- gitleaks git --pre-commit --staged --redact --no-banner --log-level warn
