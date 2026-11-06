@@ -13,7 +13,7 @@ set -euo pipefail
 
 OWNER=maleksander
 PROJECTS="$HOME/projects"
-REPOSITORIES=(homelab-ops homelab-platform homelab-desktop)
+REPOSITORIES=(homelab-ops homelab-platform homelab-desktop dotfiles)
 # github.com's own key: public, published by GitHub, pinned so the first connection
 # is not a blind trust.
 GITHUB_HOST_KEY='github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl'
@@ -51,7 +51,19 @@ mkdir -p "$HOME/.ssh" "$PROJECTS"
 chmod 0700 "$HOME/.ssh"
 grep -qsF "$GITHUB_HOST_KEY" "$HOME/.ssh/known_hosts" || echo "$GITHUB_HOST_KEY" >> "$HOME/.ssh/known_hosts"
 # unbound: gpg-agent cannot sign the card's Ed25519 over the longer host-bound form.
-export GIT_SSH_COMMAND='ssh -o PubkeyAuthentication=unbound -o StrictHostKeyChecking=yes'
+SSH=(ssh -o PubkeyAuthentication=unbound -o StrictHostKeyChecking=yes)
+export GIT_SSH_COMMAND="${SSH[*]}"
+# A sign-in first, for the PIN: GitHub drops a login that waits on it, which would stop
+# the clone. The second try finds the PIN entered. Only two: a wrong PIN costs a try of
+# three. Its words, not its exit: GitHub offers no shell, so a good sign-in exits 1.
+github_sign_in() {
+  local answer
+  answer="$("${SSH[@]}" -T git@github.com 2>&1 || true)"
+  [[ $answer == *"successfully authenticated"* ]]
+}
+if ! github_sign_in && ! github_sign_in; then
+  die "no sign-in to GitHub: the PIN and a touch must both land in time. Run this again: the PIN stays entered"
+fi
 for repository in "${REPOSITORIES[@]}"; do
   if [ -d "$PROJECTS/$repository/.git" ]; then
     git -C "$PROJECTS/$repository" pull --ff-only --quiet
@@ -61,12 +73,29 @@ for repository in "${REPOSITORIES[@]}"; do
   fi
 done
 
+# The password store, when it has been pushed: pass-from-bitwarden makes it otherwise.
+# Where dotfiles' PASSWORD_STORE_DIR points.
+PASS_STORE="$HOME/.local/share/pass"
+if [ ! -d "$PASS_STORE/.git" ] && [ -n "$(git ls-remote "git@github.com:$OWNER/pass-store.git" HEAD 2>/dev/null)" ]; then
+  mkdir -p "$(dirname "$PASS_STORE")"
+  git clone "git@github.com:$OWNER/pass-store.git" "$PASS_STORE"
+fi
+
 # ---- Ansible, and the rest. ----
 say "Ansible"
 sudo pacman -Syu --needed --noconfirm ansible-core
 cd "$PROJECTS/homelab-desktop/ansible"
 ansible-galaxy collection install -r requirements.yml
 ansible-playbook playbooks/site.yml --ask-become-pass
+
+# ---- dotfiles' own bootstrap: nvim and the notebook, over the card. ----
+say "dotfiles (a touch for each clone)"
+yadm bootstrap
+
+# zsh's plugins, public, once and over HTTPS: dotfiles turns GitHub's URLs into SSH, so
+# the first terminal would otherwise ask for the card for every plugin.
+say "zsh's plugins"
+GIT_CONFIG_GLOBAL=/dev/null zsh -ic exit || true
 
 # ---- What needs the card and the lab. ----
 # The sign-in kubeconfig holds the cluster's public CA, read over SSH with the card:
@@ -79,4 +108,4 @@ else
   echo "Not reachable from here: later, in homelab-ops, mise run kubeconfig, then scripts/kubeconfig_oidc.sh"
 fi
 
-say "Done. Reboot into the desktop."
+say "Done. Reboot into the desktop. pass-from-bitwarden copies the vault into pass."
