@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-exec mise exec -- shellcheck install.sh
+exec mise exec -- shellcheck install.sh first-boot.sh
