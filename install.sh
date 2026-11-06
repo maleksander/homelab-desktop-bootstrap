@@ -10,13 +10,15 @@
 # history; root's stays locked (sudo is the way to root).
 #
 # The layout: an EFI system partition (1 GiB, /boot) and the rest as root,
-# ext4. No swap partition: zram, so nothing of memory reaches the disk in the
-# clear.
+# btrfs: subvolumes @ (/), @home, and @log and @pkg, kept out of root's
+# snapshots so a rollback does not lose logs or re-download packages. No swap
+# partition: zram, so nothing of memory reaches the disk in the clear.
 set -euo pipefail
 
 TIMEZONE="Europe/Warsaw"
 MOUNT=/mnt
 ESP_SIZE=1G
+BTRFS_OPTIONS=noatime,compress=zstd:1
 
 disk="" hostname="" user=""
 while [ $# -gt 0 ]; do
@@ -82,8 +84,16 @@ sgdisk --new=1:0:+"$ESP_SIZE" --typecode=1:ef00 --change-name=1:ESP \
 partprobe "$disk"
 udevadm settle
 mkfs.fat -F 32 -n ESP "${part}1" >/dev/null
-mkfs.ext4 -q -L root "${part}2"
+mkfs.btrfs -q -f -L root "${part}2"
 mount "${part}2" "$MOUNT"
+for subvolume in @ @home @log @pkg; do
+  btrfs -q subvolume create "$MOUNT/$subvolume"
+done
+umount "$MOUNT"
+mount -o "$BTRFS_OPTIONS,subvol=@" "${part}2" "$MOUNT"
+mount --mkdir -o "$BTRFS_OPTIONS,subvol=@home" "${part}2" "$MOUNT/home"
+mount --mkdir -o "$BTRFS_OPTIONS,subvol=@log" "${part}2" "$MOUNT/var/log"
+mount --mkdir -o "$BTRFS_OPTIONS,subvol=@pkg" "${part}2" "$MOUNT/var/cache/pacman/pkg"
 mount --mkdir -o fmask=0077,dmask=0077 "${part}1" "$MOUNT/boot"
 
 # ---- The base system. ----
@@ -98,9 +108,11 @@ mkdir -p "$MOUNT/etc"
 echo 'KEYMAP=us' > "$MOUNT/etc/vconsole.conf"
 # git, gnupg, the PC/SC stack and an SSH client: what the card needs to fetch
 # homelab-desktop on the first boot. openssh brings sshd too: it is not enabled.
-pacstrap -K "$MOUNT" base linux linux-firmware $ucode sudo networkmanager zram-generator \
+pacstrap -K "$MOUNT" base linux linux-firmware $ucode btrfs-progs sudo networkmanager zram-generator \
   git gnupg pcsclite ccid openssh
-genfstab -U "$MOUNT" >> "$MOUNT/etc/fstab"
+# By subvolume name only: a subvolid in fstab would pin the mount to the old
+# subvolume after a rollback.
+genfstab -U "$MOUNT" | sed -E 's/,?subvolid=[0-9]+//' >> "$MOUNT/etc/fstab"
 
 # ---- The configuration, inside it. ----
 say "Configuring"
@@ -153,7 +165,7 @@ title   Arch Linux ($entry)
 linux   /vmlinuz-linux
 $initrd_ucode
 initrd  /$image
-options root=PARTUUID=$root_uuid rw
+options root=PARTUUID=$root_uuid rootflags=subvol=@ rw
 ENTRY
 done
 
