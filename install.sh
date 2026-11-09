@@ -9,11 +9,17 @@
 # are asked at the prompt and never appear in an argument, a file or the shell
 # history; root's stays locked (sudo is the way to root).
 #
-# The layout: an EFI system partition (1 GiB, /boot) and the rest as root,
-# btrfs: subvolumes @ (/), @home, @snapshots (outside @, so a snapshot can
-# replace it), and @log, @pkg and @docker, kept out of root's snapshots so a
-# rollback keeps the logs, the package cache and the containers. No swap
-# partition: zram, so nothing of memory reaches the disk in the clear.
+# The layout: an EFI system partition (1 GiB, /boot, the only part in the
+# clear: the kernel and the initramfs) and the rest encrypted (LUKS2), btrfs
+# inside: subvolumes @ (/), @home, @data (the owner's files, snapshotted and
+# backed up on their own), @snapshots (outside @, so a snapshot can replace
+# it), and @log, @pkg and @docker, kept out of root's snapshots so a rollback
+# keeps the logs, the package cache and the containers. No swap partition:
+# zram, so nothing of memory reaches the disk.
+#
+# The disk's passphrase set here is the recovery one: after the first boot the
+# hardware keys are enrolled to unlock it (disk-enroll), and the passphrase goes
+# to the safe.
 set -euo pipefail
 
 TIMEZONE="Europe/Warsaw"
@@ -27,7 +33,7 @@ while [ $# -gt 0 ]; do
     --disk)     disk="${2:-}"; shift 2 ;;
     --hostname) hostname="${2:-}"; shift 2 ;;
     --user)     user="${2:-}"; shift 2 ;;
-    -h|--help)  sed -n '2,15p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    -h|--help)  sed -n '2,22p' "$0" | sed 's/^# \?//'; exit 0 ;;
     *) printf 'install: unknown option %s\n' "$1" >&2; exit 2 ;;
   esac
 done
@@ -47,21 +53,30 @@ say() { printf '\n==> %s\n' "$1"; }
 if lsblk -no MOUNTPOINTS "$disk" | grep -q .; then
   die "$disk has something mounted: unmount it first"
 fi
+[ ! -e /dev/mapper/root ] || die "/dev/mapper/root is open (an earlier run?): umount -R $MOUNT; cryptsetup close root"
+
 curl -fsS --max-time 15 -o /dev/null https://archlinux.org || die "no internet (Wi-Fi: iwctl; docs in the README)"
 
 # ---- The passwords, before the long part: nothing to wait for afterwards. ----
-read_password() {
+# read_secret <prompt> <minimum length>: sets $secret.
+read_secret() {
   local a b
   while :; do
-    IFS= read -rsp "Password for $user: " a; echo
+    IFS= read -rsp "$1: " a; echo
     IFS= read -rsp "Again: " b; echo
-    [ -n "$a" ] && [ "$a" = "$b" ] && break
-    echo "They differ, or are empty. Again."
+    [ "${#a}" -ge "$2" ] && [ "$a" = "$b" ] && break
+    echo "They differ, or are shorter than $2 characters. Again."
   done
-  password="$a"
+  secret="$a"
 }
-password=""
-read_password
+secret=""
+read_secret "Password for $user" 1
+password="$secret"
+echo "The disk's recovery passphrase: typed at boot until a hardware key is enrolled,"
+echo "then kept in the safe. Long (a sentence of words), not used anywhere else."
+read_secret "Disk passphrase" 12
+passphrase="$secret"
+secret=
 
 # ---- The one irreversible step. ----
 echo
@@ -81,22 +96,31 @@ esac
 wipefs --all --force "$disk"
 sgdisk --zap-all "$disk" >/dev/null
 sgdisk --new=1:0:+"$ESP_SIZE" --typecode=1:ef00 --change-name=1:ESP \
-       --new=2:0:0 --typecode=2:8304 --change-name=2:root "$disk" >/dev/null
+       --new=2:0:0 --typecode=2:8309 --change-name=2:root "$disk" >/dev/null
 partprobe "$disk"
 udevadm settle
 mkfs.fat -F 32 -n ESP "${part}1" >/dev/null
-mkfs.btrfs -q -f -L root "${part}2"
-mount "${part}2" "$MOUNT"
-for subvolume in @ @home @snapshots @log @pkg @docker; do
+# The passphrase on stdin, without a newline: what is typed at boot has none.
+# Discards pass through (TRIM, for the SSD's sake), stored in the header: it shows
+# which blocks are free, not what is in them.
+say "Encrypting ${part}2"
+printf '%s' "$passphrase" | cryptsetup -q luksFormat --type luks2 --label cryptroot --key-file=- "${part}2"
+printf '%s' "$passphrase" | cryptsetup open --allow-discards --persistent --key-file=- "${part}2" root
+passphrase=""
+root=/dev/mapper/root
+mkfs.btrfs -q -f -L root "$root"
+mount "$root" "$MOUNT"
+for subvolume in @ @home @data @snapshots @log @pkg @docker; do
   btrfs -q subvolume create "$MOUNT/$subvolume"
 done
 umount "$MOUNT"
-mount -o "$BTRFS_OPTIONS,subvol=@" "${part}2" "$MOUNT"
-mount --mkdir -o "$BTRFS_OPTIONS,subvol=@home" "${part}2" "$MOUNT/home"
-mount --mkdir -o "$BTRFS_OPTIONS,subvol=@snapshots" "${part}2" "$MOUNT/.snapshots"
-mount --mkdir -o "$BTRFS_OPTIONS,subvol=@log" "${part}2" "$MOUNT/var/log"
-mount --mkdir -o "$BTRFS_OPTIONS,subvol=@pkg" "${part}2" "$MOUNT/var/cache/pacman/pkg"
-mount --mkdir -o "$BTRFS_OPTIONS,subvol=@docker" "${part}2" "$MOUNT/var/lib/docker"
+mount -o "$BTRFS_OPTIONS,subvol=@" "$root" "$MOUNT"
+mount --mkdir -o "$BTRFS_OPTIONS,subvol=@home" "$root" "$MOUNT/home"
+mount --mkdir -o "$BTRFS_OPTIONS,subvol=@data" "$root" "$MOUNT/data"
+mount --mkdir -o "$BTRFS_OPTIONS,subvol=@snapshots" "$root" "$MOUNT/.snapshots"
+mount --mkdir -o "$BTRFS_OPTIONS,subvol=@log" "$root" "$MOUNT/var/log"
+mount --mkdir -o "$BTRFS_OPTIONS,subvol=@pkg" "$root" "$MOUNT/var/cache/pacman/pkg"
+mount --mkdir -o "$BTRFS_OPTIONS,subvol=@docker" "$root" "$MOUNT/var/lib/docker"
 mount --mkdir -o fmask=0077,dmask=0077 "${part}1" "$MOUNT/boot"
 
 # ---- The base system. ----
@@ -106,13 +130,17 @@ case "$(awk '/vendor_id/{print $3; exit}' /proc/cpuinfo)" in
   GenuineIntel) ucode=intel-ucode ;;
   AuthenticAMD) ucode=amd-ucode ;;
 esac
-# Read by mkinitcpio while pacstrap installs the kernel, so it comes first.
-mkdir -p "$MOUNT/etc"
+# Read by mkinitcpio while pacstrap installs the kernel, so they come first.
+# systemd's initramfs with sd-encrypt: it asks for the passphrase, and once a
+# hardware key is enrolled it uses the key (FIDO2, through libfido2) instead.
+mkdir -p "$MOUNT/etc/mkinitcpio.conf.d"
 echo 'KEYMAP=us' > "$MOUNT/etc/vconsole.conf"
+echo 'HOOKS=(base systemd autodetect microcode modconf kms keyboard sd-vconsole block sd-encrypt filesystems fsck)' \
+  > "$MOUNT/etc/mkinitcpio.conf.d/encrypt.conf"
 # git, gnupg, the PC/SC stack and an SSH client: what the card needs to fetch
 # homelab-desktop on the first boot. openssh brings sshd too: it is not enabled.
-pacstrap -K "$MOUNT" base linux linux-firmware $ucode btrfs-progs sudo networkmanager zram-generator \
-  git gnupg pcsclite ccid openssh
+pacstrap -K "$MOUNT" base linux linux-firmware $ucode btrfs-progs cryptsetup libfido2 sudo \
+  networkmanager zram-generator git gnupg pcsclite ccid openssh
 # By subvolume name only: a subvolid in fstab would pin the mount to the old
 # subvolume after a rollback.
 genfstab -U "$MOUNT" | sed -E 's/,?subvolid=[0-9]+//' >> "$MOUNT/etc/fstab"
@@ -156,7 +184,7 @@ password=""
 # From the ISO's side, not the chroot's: inside it bootctl skips the firmware's
 # variables, and the machine would only boot through the fallback path.
 bootctl --esp-path="$MOUNT/boot" install
-root_uuid="$(blkid -s PARTUUID -o value "${part}2")"
+luks_uuid="$(cryptsetup luksUUID "${part}2")"
 initrd_ucode=""
 [ -z "$ucode" ] || initrd_ucode="initrd  /$ucode.img"
 printf 'default arch.conf\ntimeout 2\neditor no\n' > "$MOUNT/boot/loader/loader.conf"
@@ -168,9 +196,10 @@ title   Arch Linux ($entry)
 linux   /vmlinuz-linux
 $initrd_ucode
 initrd  /$image
-options root=PARTUUID=$root_uuid rootflags=subvol=@ rw
+options rd.luks.name=$luks_uuid=root root=$root rootflags=subvol=@ rw
 ENTRY
 done
 
 umount -R "$MOUNT"
+cryptsetup close root
 say "Done. Remove the install medium and reboot."
