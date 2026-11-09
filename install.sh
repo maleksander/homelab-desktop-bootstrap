@@ -3,7 +3,7 @@
 # system, the boot loader, one user. Nothing else -- everything after the first
 # boot is homelab-desktop's (Ansible), which the card fetches.
 #
-#   ./install.sh --disk /dev/nvme0n1 --hostname hektor --user masander
+#   ./install.sh --disk /dev/nvme0n1 --hostname laptop --user masander
 #
 # THIS ERASES THE DISK. It asks you to type the disk's name first. Passwords
 # are asked at the prompt and never appear in an argument, a file or the shell

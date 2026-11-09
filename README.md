@@ -8,7 +8,7 @@ that reason; it holds no secret.
 # On the Arch ISO, as root (Wi-Fi first if needed: iwctl).
 curl -fsSLO https://raw.githubusercontent.com/maleksander/homelab-desktop-bootstrap/main/install.sh
 less install.sh      # it erases a disk: read it
-bash install.sh --disk /dev/nvme0n1 --hostname hektor --user masander
+bash install.sh --disk /dev/nvme0n1 --hostname laptop --user masander
 ```
 
 **It erases the disk**, after asking you to type the disk's name.
