@@ -5,6 +5,11 @@
 #
 #   ./install.sh --disk /dev/nvme0n1 --hostname laptop --user masander
 #
+# Optional, with their defaults (the owner's): --timezone Europe/Warsaw,
+# --keymap us (the console's, and the disk's prompt), --lang en_US.UTF-8 (messages),
+# --formats pl_PL.UTF-8 (dates, numbers, money, paper). After the first boot
+# homelab-desktop's system_locale role owns these four (docs/install.md).
+#
 # THIS ERASES THE DISK. It asks you to type the disk's name first. Passwords
 # are asked at the prompt and never appear in an argument, a file or the shell
 # history; root's stays locked (sudo is the way to root).
@@ -22,18 +27,22 @@
 # to the safe.
 set -euo pipefail
 
-TIMEZONE="Europe/Warsaw"
 MOUNT=/mnt
 ESP_SIZE=1G
 BTRFS_OPTIONS=noatime,compress=zstd:1
 
 disk="" hostname="" user=""
+timezone="Europe/Warsaw" keymap="us" lang="en_US.UTF-8" formats="pl_PL.UTF-8"
 while [ $# -gt 0 ]; do
   case "$1" in
     --disk)     disk="${2:-}"; shift 2 ;;
     --hostname) hostname="${2:-}"; shift 2 ;;
     --user)     user="${2:-}"; shift 2 ;;
-    -h|--help)  sed -n '2,22p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    --timezone) timezone="${2:-}"; shift 2 ;;
+    --keymap)   keymap="${2:-}"; shift 2 ;;
+    --lang)     lang="${2:-}"; shift 2 ;;
+    --formats)  formats="${2:-}"; shift 2 ;;
+    -h|--help)  sed -n '2,27p' "$0" | sed 's/^# \?//'; exit 0 ;;
     *) printf 'install: unknown option %s\n' "$1" >&2; exit 2 ;;
   esac
 done
@@ -50,6 +59,12 @@ say() { printf '\n==> %s\n' "$1"; }
 [ "$(lsblk -dno TYPE "$disk")" = disk ] || die "$disk is not a whole disk"
 [[ "$hostname" =~ ^[a-z0-9-]+$ ]] || die "the hostname: lowercase letters, digits and - only"
 [[ "$user" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "the user name: lowercase letters, digits, _ and - only"
+# The ISO has the same zone files, keymaps and locale list as the system it installs.
+[ -f "/usr/share/zoneinfo/$timezone" ] || die "no timezone $timezone (timedatectl list-timezones)"
+localectl list-keymaps | grep -qxF "$keymap" || die "no keymap $keymap (localectl list-keymaps)"
+for l in "$lang" "$formats"; do
+  grep -qx "$l UTF-8" /usr/share/i18n/SUPPORTED || die "no UTF-8 locale $l (/usr/share/i18n/SUPPORTED)"
+done
 if lsblk -no MOUNTPOINTS "$disk" | grep -q .; then
   die "$disk has something mounted: unmount it first"
 fi
@@ -70,7 +85,8 @@ read_secret() {
   secret="$a"
 }
 secret=""
-read_secret "Password for $user" 1
+# 8 at least: it is sudo's, and the screen lock's without a card.
+read_secret "Password for $user" 8
 password="$secret"
 echo "The disk's recovery passphrase: typed at boot until a hardware key is enrolled,"
 echo "then kept in the safe. Long (a sentence of words), not used anywhere else."
@@ -134,7 +150,7 @@ esac
 # systemd's initramfs with sd-encrypt: it asks for the passphrase, and once a
 # hardware key is enrolled it uses the key (FIDO2, through libfido2) instead.
 mkdir -p "$MOUNT/etc/mkinitcpio.conf.d"
-echo 'KEYMAP=us' > "$MOUNT/etc/vconsole.conf"
+echo "KEYMAP=$keymap" > "$MOUNT/etc/vconsole.conf"
 echo 'HOOKS=(base systemd autodetect microcode modconf kms keyboard sd-vconsole block sd-encrypt filesystems fsck)' \
   > "$MOUNT/etc/mkinitcpio.conf.d/encrypt.conf"
 # git, gnupg, the PC/SC stack and an SSH client: what the card needs to fetch
@@ -149,19 +165,14 @@ genfstab -U "$MOUNT" | sed -E 's/,?subvolid=[0-9]+//' >> "$MOUNT/etc/fstab"
 say "Configuring"
 echo "$hostname" > "$MOUNT/etc/hostname"
 printf '127.0.0.1 localhost\n::1 localhost\n127.0.1.1 %s\n' "$hostname" >> "$MOUNT/etc/hosts"
-printf 'en_US.UTF-8 UTF-8\npl_PL.UTF-8 UTF-8\n' >> "$MOUNT/etc/locale.gen"
-cat > "$MOUNT/etc/locale.conf" <<LOCALE
-LANG=en_US.UTF-8
-LC_ADDRESS=pl_PL.UTF-8
-LC_IDENTIFICATION=pl_PL.UTF-8
-LC_MEASUREMENT=pl_PL.UTF-8
-LC_MONETARY=pl_PL.UTF-8
-LC_NAME=pl_PL.UTF-8
-LC_NUMERIC=pl_PL.UTF-8
-LC_PAPER=pl_PL.UTF-8
-LC_TELEPHONE=pl_PL.UTF-8
-LC_TIME=pl_PL.UTF-8
-LOCALE
+printf '%s UTF-8\n' "$lang" "$formats" | sort -u >> "$MOUNT/etc/locale.gen"
+# Messages in $lang; dates, numbers, money, paper and the rest in $formats.
+{
+  echo "LANG=$lang"
+  for c in ADDRESS IDENTIFICATION MEASUREMENT MONETARY NAME NUMERIC PAPER TELEPHONE TIME; do
+    echo "LC_$c=$formats"
+  done
+} > "$MOUNT/etc/locale.conf"
 printf '[zram0]\nzram-size = min(ram / 2, 8192)\n' > "$MOUNT/etc/systemd/zram-generator.conf"
 echo '%wheel ALL=(ALL:ALL) ALL' > "$MOUNT/etc/sudoers.d/wheel"
 chmod 0440 "$MOUNT/etc/sudoers.d/wheel"
@@ -170,7 +181,7 @@ chmod 0440 "$MOUNT/etc/sudoers.d/wheel"
 ln -sf ../run/systemd/resolve/stub-resolv.conf "$MOUNT/etc/resolv.conf"
 
 arch-chroot "$MOUNT" /bin/bash -euo pipefail <<CHROOT
-ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
+ln -sf /usr/share/zoneinfo/$timezone /etc/localtime
 hwclock --systohc
 locale-gen >/dev/null
 useradd --create-home --groups wheel "$user"

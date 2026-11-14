@@ -2,3 +2,13 @@
 [tools]
 "aqua:gitleaks/gitleaks" = "8.30.1"
 "aqua:koalaman/shellcheck" = "0.11.0"
+
+# The scripts' detached signatures, M1's signing key on the card (a touch each):
+# made after every change to them; the pre-commit hook refuses a stale one (README).
+[tasks.sign]
+description = "Sign install.sh and first-boot.sh (install.sh.asc, first-boot.sh.asc) with M1 on the card"
+run = """
+for f in install.sh first-boot.sh; do
+  gpg --yes --armor --local-user EE1E8CDC13115D94501B7BE42AA1A1FAE7227C0A! --detach-sign --output "$f.asc" "$f"
+done
+"""

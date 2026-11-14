@@ -5,6 +5,8 @@
 #   curl -fsSLO https://raw.githubusercontent.com/maleksander/homelab-desktop-bootstrap/main/first-boot.sh
 #   bash first-boot.sh
 #
+# Checked first against its signature and the card (README, "Checking the scripts").
+#
 # The card is the only credential: its authentication key is the owner's on
 # GitHub, so it clones the private repositories, and Ansible does the rest
 # (homelab-desktop). It asks for the card's PIN once, a touch per connection, and

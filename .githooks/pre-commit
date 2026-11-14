@@ -1,3 +1,15 @@
 #!/usr/bin/env bash
-# Public repository: refuse a commit carrying a secret in the clear.
-exec mise exec -- gitleaks git --pre-commit --staged --redact --no-banner --log-level warn
+# Public repository: refuse a commit carrying a secret in the clear, and one whose
+# scripts' signatures do not match them (mise run sign: README, "Checking the scripts").
+set -euo pipefail
+mise exec -- gitleaks git --pre-commit --staged --redact --no-banner --log-level warn
+keyring="$(mktemp)"
+trap 'rm -f "$keyring"' EXIT
+gpg --dearmor < owner-2026.asc > "$keyring"
+for f in install.sh first-boot.sh; do
+  # The staged file, what the commit will hold.
+  if ! git show ":$f" | gpgv --keyring "$keyring" "$f.asc" - 2>/dev/null; then
+    echo "pre-commit: $f.asc does not sign the staged $f: mise run sign, git add $f.asc" >&2
+    exit 1
+  fi
+done
