@@ -176,6 +176,13 @@ locale-gen >/dev/null
 useradd --create-home --groups wheel "$user"
 passwd --lock root >/dev/null
 systemctl enable NetworkManager systemd-resolved systemd-timesyncd pcscd.socket
+# The fallback image, for the fallback boot entry below: every module, no autodetect.
+# Arch's mkinitcpio builds only the default image unless the preset asks for both.
+sed -i -e "s/^PRESETS=.*/PRESETS=('default' 'fallback')/" \\
+  -e 's/^#fallback_image=/fallback_image=/' -e 's/^#fallback_options=/fallback_options=/' \\
+  /etc/mkinitcpio.d/linux.preset
+mkinitcpio -p linux >/dev/null
+test -f /boot/initramfs-linux-fallback.img
 CHROOT
 printf '%s:%s\n' "$user" "$password" | arch-chroot "$MOUNT" chpasswd
 password=""
