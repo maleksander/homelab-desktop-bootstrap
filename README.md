@@ -47,4 +47,6 @@ bash first-boot.sh
 ```
 
 The card is the only credential the machine needs: it clones the private
-repositories, and Ansible builds the rest.
+repositories, and Ansible builds the rest. At home, it then offers to restore `/data` from its newest
+backup on the NAS -- the owner's files and Claude Code's state -- asking for the
+backup's two passwords (Bitwarden).

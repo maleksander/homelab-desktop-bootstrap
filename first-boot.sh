@@ -90,6 +90,26 @@ cd "$PROJECTS/homelab-desktop/ansible"
 ansible-galaxy collection install -r requirements.yml
 ansible-playbook playbooks/site.yml --ask-become-pass
 
+# ---- The data, from the NAS (homelab-desktop's docs/restic.md, "A new install"). ----
+# /data's newest backup: the owner's files and Claude Code's state (/data/claude), before
+# anything starts Claude Code and fills it. Only into an empty /data (a run again finds
+# it restored and passes by), only where the NAS answers (at home); asks for the
+# repository's password and this machine's rest-server login, both in Bitwarden.
+if [ -z "$(find /data -mindepth 2 -not -path '/data/.snapshots*' -print -quit 2>/dev/null)" ]; then
+  say "Your data, from the NAS"
+  if ! sudo data-backup reachable; then
+    echo "The NAS does not answer from here: later, at home, sudo data-backup setup, then restore."
+  elif read -rp "Restore /data from its newest backup now? [Y/n] " a && [[ ${a:-y} == [Yy]* ]]; then
+    # In an if: a password mistyped or the prompt left skips the restore, not first-boot.
+    if { sudo test -s /etc/restic/rest.env || sudo data-backup setup; } \
+       && sudo data-backup snapshots && sudo data-backup restore; then
+      echo "Restored into /data."
+    else
+      echo "Not restored: sudo data-backup setup (if a password was wrong), then sudo data-backup restore."
+    fi
+  fi
+fi
+
 # ---- dotfiles' own bootstrap: nvim and the notebook, over the card. ----
 say "dotfiles (a touch for each clone)"
 yadm bootstrap
