@@ -26,6 +26,13 @@ say() { printf '\n==> %s\n' "$1"; }
 [ "$(id -u)" -ne 0 ] || die "run it as the user, not root"
 [ -n "$(tty 2>/dev/null || true)" ] || die "run it on a terminal: the card's PIN is asked here"
 
+# sudo's password once, here, and kept fresh for the whole run: Ansible's first run is
+# long, and sudo's prompt later on (the restore) gives up after 5 minutes unanswered.
+sudo -v
+while sleep 60; do sudo -n -v 2>/dev/null || exit; done &
+SUDO_KEEPALIVE=$!
+trap 'kill "$SUDO_KEEPALIVE" 2>/dev/null || true' EXIT
+
 # ---- The card, as the SSH agent. ----
 # The same places dotfiles uses, which replaces these two small files later.
 say "The card"
@@ -37,12 +44,17 @@ chmod 0700 "$GNUPGHOME"
 [ -e "$GNUPGHOME/scdaemon.conf" ] || echo disable-ccid > "$GNUPGHOME/scdaemon.conf"
 export GPG_TTY
 GPG_TTY="$(tty)"
+# A gpg in ~/.gnupg (the signature's check, README) left its scdaemon holding the card:
+# ours then finds none (2026-11-15, the VM). Stopped; nothing else uses ~/.gnupg here.
+[ ! -d "$HOME/.gnupg" ] || gpgconf --homedir "$HOME/.gnupg" --kill all 2>/dev/null || true
 gpgconf --launch gpg-agent
 SSH_AUTH_SOCK="$(gpgconf --list-dirs agent-ssh-socket)"
 export SSH_AUTH_SOCK
 gpg-connect-agent updatestartuptty /bye >/dev/null
 until gpg --card-status >/dev/null 2>&1; do
   read -rp "No card found. Plug one in, then press Enter. "
+  # scdaemon keeps a "no card" it once saw: a fresh one looks again.
+  gpgconf --kill scdaemon
 done
 # scdaemon has now read the card, which is what lets the agent offer its key.
 ssh-add -L | grep -q . || die "the agent offers no key: is this card one of the owner's?"
@@ -97,7 +109,9 @@ ansible-playbook playbooks/site.yml --ask-become-pass
 # repository's password and this machine's rest-server login, both in Bitwarden.
 if [ -z "$(find /data -mindepth 2 -not -path '/data/.snapshots*' -print -quit 2>/dev/null)" ]; then
   say "Your data, from the NAS"
-  if ! sudo data-backup reachable; then
+  if ! sudo -n true 2>/dev/null; then
+    echo "sudo wants its password again: skipped. Later: sudo data-backup setup, then restore."
+  elif ! sudo -n data-backup reachable; then
     echo "The NAS does not answer from here: later, at home, sudo data-backup setup, then restore."
   elif read -rp "Restore /data from its newest backup now? [Y/n] " a && [[ ${a:-y} == [Yy]* ]]; then
     # In an if: a password mistyped or the prompt left skips the restore, not first-boot.
