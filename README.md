@@ -10,7 +10,8 @@ curl -fsSL --remote-name-all \
   'https://raw.githubusercontent.com/maleksander/homelab-desktop-bootstrap/main/{install.sh,install.sh.asc,owner-2026.asc}'
 # Checking the scripts, below: before running anything as root.
 less install.sh      # it erases a disk: read it
-bash install.sh --disk /dev/nvme0n1 --hostname laptop --user masander
+ls -l /dev/disk/by-id | grep -v part     # the disks by model and serial: pick the one to erase
+bash install.sh --disk /dev/disk/by-id/nvme-<model>_<serial> --hostname laptop --user masander
 ```
 
 ## Checking the scripts

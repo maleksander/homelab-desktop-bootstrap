@@ -3,7 +3,11 @@
 # system, the boot loader, one user. Nothing else -- everything after the first
 # boot is homelab-desktop's (Ansible), which the card fetches.
 #
-#   ./install.sh --disk /dev/nvme0n1 --hostname laptop --user masander
+#   ./install.sh --disk /dev/disk/by-id/nvme-<model>_<serial> --hostname laptop --user masander
+#
+# --disk: any path to the whole disk; its /dev/disk/by-id name is the unambiguous one
+# (ls -l /dev/disk/by-id), as sda and sdb can swap between boots. Only that disk is
+# touched: every disk is listed before the question, a second one is left as it is.
 #
 # Optional, with their defaults (the owner's): --timezone Europe/Warsaw,
 # --keymap us (the console's, and the disk's prompt), --lang en_US.UTF-8 (messages),
@@ -57,6 +61,9 @@ say() { printf '\n==> %s\n' "$1"; }
 [ -n "$disk" ] && [ -n "$hostname" ] && [ -n "$user" ] || die "--disk, --hostname and --user are all required (--help)"
 [ -b "$disk" ] || die "$disk is not a block device"
 [ "$(lsblk -dno TYPE "$disk")" = disk ] || die "$disk is not a whole disk"
+# The kernel's name behind whatever path was given (/dev/disk/by-id/... is the stable
+# one: with two disks, sda and sdb can swap between boots). Everything below uses it.
+dev="$(readlink -f "$disk")"
 [[ "$hostname" =~ ^[a-z0-9-]+$ ]] || die "the hostname: lowercase letters, digits and - only"
 [[ "$user" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "the user name: lowercase letters, digits, _ and - only"
 # The ISO has the same zone files, keymaps and locale list as the system it installs.
@@ -65,7 +72,7 @@ localectl list-keymaps | grep -qxF "$keymap" || die "no keymap $keymap (localect
 for l in "$lang" "$formats"; do
   grep -qx "$l UTF-8" /usr/share/i18n/SUPPORTED || die "no UTF-8 locale $l (/usr/share/i18n/SUPPORTED)"
 done
-if lsblk -no MOUNTPOINTS "$disk" | grep -q .; then
+if lsblk -no MOUNTPOINTS "$dev" | grep -q .; then
   die "$disk has something mounted: unmount it first"
 fi
 [ ! -e /dev/mapper/root ] || die "/dev/mapper/root is open (an earlier run?): umount -R $MOUNT; cryptsetup close root"
@@ -95,33 +102,38 @@ passphrase="$secret"
 secret=
 
 # ---- The one irreversible step. ----
+# Every disk, so the one named is seen among the others (a second disk is left alone).
 echo
-lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MODEL "$disk"
+echo "The disks here:"
+lsblk -d -e 7,11 -o NAME,SIZE,MODEL,SERIAL,TRAN
+echo
+if [ "$disk" = "$dev" ]; then echo "The one to erase: $dev"; else echo "The one to erase: $disk ($dev)"; fi
+lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MODEL,SERIAL "$dev"
 echo
 printf 'Everything on %s will be ERASED. Type the disk name to go on: ' "$disk"
 IFS= read -r answer
 [ "$answer" = "$disk" ] || die "not confirmed: nothing was changed"
 
 # ---- The disk. ----
-say "Partitioning $disk"
-# Partition names: /dev/nvme0n1 -> /dev/nvme0n1p1, /dev/vda -> /dev/vda1.
-case "$disk" in
-  *[0-9]) part="${disk}p" ;;
-  *)      part="$disk" ;;
-esac
-wipefs --all --force "$disk"
-sgdisk --zap-all "$disk" >/dev/null
+say "Partitioning $dev"
+wipefs --all --force "$dev"
+sgdisk --zap-all "$dev" >/dev/null
 sgdisk --new=1:0:+"$ESP_SIZE" --typecode=1:ef00 --change-name=1:ESP \
-       --new=2:0:0 --typecode=2:8309 --change-name=2:root "$disk" >/dev/null
-partprobe "$disk"
+       --new=2:0:0 --typecode=2:8309 --change-name=2:root "$dev" >/dev/null
+partprobe "$dev"
 udevadm settle
-mkfs.fat -F 32 -n ESP "${part}1" >/dev/null
+# The partitions as the kernel names them, by number: no naming rule to get wrong
+# (nvme0n1p1, sda1, mmcblk0p1 -- and a by-id path, which none of them fits).
+partition() { lsblk -lnpo NAME,PARTN "$dev" | awk -v n="$1" '$2 == n {print $1}'; }
+esp="$(partition 1)" luks="$(partition 2)"
+[ -b "$esp" ] && [ -b "$luks" ] || die "the new partitions on $dev were not found"
+mkfs.fat -F 32 -n ESP "$esp" >/dev/null
 # The passphrase on stdin, without a newline: what is typed at boot has none.
 # Discards pass through (TRIM, for the SSD's sake), stored in the header: it shows
 # which blocks are free, not what is in them.
-say "Encrypting ${part}2"
-printf '%s' "$passphrase" | cryptsetup -q luksFormat --type luks2 --label cryptroot --key-file=- "${part}2"
-printf '%s' "$passphrase" | cryptsetup open --allow-discards --persistent --key-file=- "${part}2" root
+say "Encrypting $luks"
+printf '%s' "$passphrase" | cryptsetup -q luksFormat --type luks2 --label cryptroot --key-file=- "$luks"
+printf '%s' "$passphrase" | cryptsetup open --allow-discards --persistent --key-file=- "$luks" root
 passphrase=""
 root=/dev/mapper/root
 mkfs.btrfs -q -f -L root "$root"
@@ -137,7 +149,7 @@ mount --mkdir -o "$BTRFS_OPTIONS,subvol=@snapshots" "$root" "$MOUNT/.snapshots"
 mount --mkdir -o "$BTRFS_OPTIONS,subvol=@log" "$root" "$MOUNT/var/log"
 mount --mkdir -o "$BTRFS_OPTIONS,subvol=@pkg" "$root" "$MOUNT/var/cache/pacman/pkg"
 mount --mkdir -o "$BTRFS_OPTIONS,subvol=@docker" "$root" "$MOUNT/var/lib/docker"
-mount --mkdir -o fmask=0077,dmask=0077 "${part}1" "$MOUNT/boot"
+mount --mkdir -o fmask=0077,dmask=0077 "$esp" "$MOUNT/boot"
 
 # ---- The base system. ----
 say "Installing the base system"
@@ -202,7 +214,7 @@ password=""
 # From the ISO's side, not the chroot's: inside it bootctl skips the firmware's
 # variables, and the machine would only boot through the fallback path.
 bootctl --esp-path="$MOUNT/boot" install
-luks_uuid="$(cryptsetup luksUUID "${part}2")"
+luks_uuid="$(cryptsetup luksUUID "$luks")"
 initrd_ucode=""
 [ -z "$ucode" ] || initrd_ucode="initrd  /$ucode.img"
 printf 'default arch.conf\ntimeout 2\neditor no\n' > "$MOUNT/boot/loader/loader.conf"
