@@ -124,6 +124,17 @@ if [ -z "$(find /data -mindepth 2 -not -path '/data/.snapshots*' -print -quit 2>
   fi
 fi
 
+# ---- The folders shared through the NAS (Syncthing; homelab-desktop's plan-sync.md). ----
+# After the restore, not in the Ansible run above: the restore puts back this machine's
+# Syncthing key (/data/syncthing), so a reinstalled machine stays the same device to the
+# NAS. Where there was none to restore, one is made, and its device ID said -- for
+# homelab-ops' syncthing_hub_devices. The folders' password from pass, with the card.
+say "Syncthing, the folders shared through the NAS (BECOME: your password again)"
+if ! (cd "$PROJECTS/homelab-desktop/ansible" &&
+      ansible-playbook playbooks/site.yml --tags sync -e sync_new_identity=true --ask-become-pass); then
+  echo "Not set up: later, in homelab-desktop/ansible, site.yml --tags sync -e sync_new_identity=true -K"
+fi
+
 # ---- dotfiles' own bootstrap: nvim and the notebook, over the card. ----
 say "dotfiles (a touch for each clone)"
 yadm bootstrap
