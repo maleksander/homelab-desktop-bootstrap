@@ -230,6 +230,62 @@ options rd.luks.name=$luks_uuid=root root=$root rootflags=subvol=@ rw
 ENTRY
 done
 
+# ---- Checked before it says "reboot". ----
+# The first real install (2026-11-16, a second disk with Windows on it) ended in a
+# machine that would not boot, with nothing to say why: what a boot needs is read back
+# here, and the firmware's entries listed. A failure says not to reboot.
+say "Checking the install"
+problems=0
+ok() { printf '  ok      %s\n' "$1"; }
+bad() { printf '  FAILED  %s\n' "$1"; problems=$((problems + 1)); }
+warn() { printf '  NOTE    %s\n' "$1"; }
+
+sync
+for f in EFI/systemd/systemd-bootx64.efi EFI/BOOT/BOOTX64.EFI loader/loader.conf \
+         loader/entries/arch.conf loader/entries/fallback.conf \
+         vmlinuz-linux initramfs-linux.img initramfs-linux-fallback.img ${ucode:+$ucode.img}; do
+  if [ -s "$MOUNT/boot/$f" ]; then ok "/boot/$f"; else bad "/boot/$f missing or empty"; fi
+done
+if grep -qs "rd.luks.name=$luks_uuid=root" "$MOUNT/boot/loader/entries/arch.conf"; then
+  ok "the boot entry names this disk's encrypted volume"
+else
+  bad "the boot entry does not name this disk's encrypted volume ($luks_uuid)"
+fi
+
+# The firmware: its first entry must start systemd-boot from THIS EFI partition. Others
+# -- Windows', or a Linux Boot Manager on another disk -- can be taken first by the
+# firmware, or chosen by mistake from its boot menu (F12): listed, with their removal.
+esp_uuid="$(lsblk -no PARTUUID "$esp" | tr '[:upper:]' '[:lower:]')"
+entries="$(efibootmgr -v 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+first="$(printf '%s\n' "$entries" | sed -n 's/^bootorder: *\([0-9a-f]\{4\}\).*/\1/p')"
+first_line="$(printf '%s\n' "$entries" | grep -m1 "^boot$first" || true)"
+if [ -n "$first" ] && printf '%s' "$first_line" | grep -q "$esp_uuid" \
+   && printf '%s' "$first_line" | grep -q 'systemd-bootx64.efi'; then
+  ok "the firmware starts here first (Boot$first, systemd-boot on $esp)"
+else
+  bad "the firmware's first entry (Boot${first:-?}) is not systemd-boot on $esp -- efibootmgr -v"
+fi
+# Matched in lower case (efibootmgr prints GUIDs either way), shown as the firmware has them.
+others="$(efibootmgr -v 2>/dev/null | grep -E '^Boot[0-9A-Fa-f]{4}' | grep -E 'HD\(' | grep -iv "$esp_uuid" || true)"
+if [ -n "$others" ]; then
+  warn "the firmware also starts these, from other partitions:"
+  printf '%s\n' "$others" | sed -E 's/^Boot([0-9A-Fa-f]{4})[* ]+([^\t]*).*/            Boot\1  \2/'
+  warn "remove one with: efibootmgr -b <number> -B (the four digits)"
+fi
+# Another disk's EFI system partition (Windows', an old Linux's): the firmware may boot it.
+for part in $(lsblk -lnpo NAME,PARTTYPE | awk 'tolower($2)=="c12a7328-f81f-11d2-ba4b-00a0c93ec93b" {print $1}'); do
+  [ "$part" != "$esp" ] || continue
+  model="$(lsblk -dno MODEL "/dev/$(lsblk -no PKNAME "$part" | head -1)" 2>/dev/null | head -1)"
+  warn "another EFI system partition: $part${model:+ ($model)} -- wipe that disk, or keep its entries out of the boot order"
+done
+
 umount -R "$MOUNT"
+if fsck.fat -n "$esp" >/dev/null 2>&1; then ok "the EFI partition's filesystem"; else bad "the EFI partition's filesystem (fsck.fat -n $esp)"; fi
+if btrfs check --readonly "$root" >/dev/null 2>&1; then ok "the root filesystem (btrfs check)"; else bad "the root filesystem (btrfs check --readonly $root)"; fi
 cryptsetup close root
+
+if [ "$problems" -gt 0 ]; then
+  printf '\n%s problem(s) above. Do NOT reboot into it: the disk can be installed again.\n' "$problems" >&2
+  exit 1
+fi
 say "Done. Remove the install medium and reboot."
