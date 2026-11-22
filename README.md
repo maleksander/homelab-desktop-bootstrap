@@ -21,6 +21,7 @@ Both scripts are signed by the owner's card (M1's signing key): `install.sh.asc`
 repository alone would prove only that whoever changed the script also changed the key.
 
 ```bash
+export GNUPGHOME="$(mktemp -d)"  # a throwaway keyring, for the check alone
 gpg --import owner-2026.asc
 gpg --verify install.sh.asc install.sh
 #   Good signature ... using EDDSA key EE1E8CDC13115D94501B7BE42AA1A1FAE7227C0A
@@ -31,6 +32,12 @@ gpg --card-status | grep -i 'signature key'
 
 The two fingerprints must be the same; if not, or not a good signature, stop. The same
 for `first-boot.sh` after the first boot (`curl` its `.asc` too).
+
+**The throwaway keyring** (`GNUPGHOME` in a temporary directory): without it, the check
+after the first boot writes a keyring into `~/.gnupg` -- before `first-boot.sh` sets the
+machine's own (`~/.local/share/gnupg`) -- and it stays, unused and in the way: a tool that
+looks for GnuPG without `GNUPGHOME` finds that one (found 2026-11-22: the touch
+notifier would have watched its agent; removed then).
 
 **After changing a script**: `mise run sign` (a touch per script), then commit the
 `.asc` files with it. The pre-commit hook refuses a commit whose staged scripts the
@@ -43,7 +50,10 @@ Then, after the reboot, as the user, on the console, with a card plugged in:
 ```bash
 curl -fsSL --remote-name-all \
   'https://raw.githubusercontent.com/maleksander/homelab-desktop-bootstrap/main/{first-boot.sh,first-boot.sh.asc,owner-2026.asc}'
-gpg --import owner-2026.asc && gpg --verify first-boot.sh.asc first-boot.sh   # and the card, as above
+( export GNUPGHOME="$(mktemp -d)"     # the throwaway keyring, as above
+  gpg --import owner-2026.asc && gpg --verify first-boot.sh.asc first-boot.sh
+  gpg --card-status | grep -i 'signature key'
+  gpgconf --kill all )                 # its agent and scdaemon gone: they would hold the card
 bash first-boot.sh
 ```
 
